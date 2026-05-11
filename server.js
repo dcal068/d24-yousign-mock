@@ -224,6 +224,75 @@ app.post('/admin/fail/:srId', async (req, res) => {
   res.json({ ok: true, srId: req.params.srId, event: 'declined' });
 });
 
+// ── Dashboard ─────────────────────────────────────────────────────────────────
+app.get('/dashboard', (req, res) => {
+  res.send(`<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <title>Yousign Mock</title>
+  <style>
+    body { font-family: monospace; padding: 24px; background: #0f0f0f; color: #e0e0e0; }
+    h1 { color: #fff; margin-bottom: 4px; }
+    p.cfg { color: #888; margin: 0 0 24px; font-size: 12px; }
+    table { width: 100%; border-collapse: collapse; }
+    th { text-align: left; padding: 8px 12px; background: #1e1e1e; color: #aaa; font-size: 12px; }
+    td { padding: 8px 12px; border-bottom: 1px solid #2a2a2a; font-size: 13px; }
+    tr:hover td { background: #1a1a1a; }
+    .status-draft    { color: #888; }
+    .status-ongoing  { color: #60a5fa; }
+    .status-done     { color: #4ade80; }
+    .status-declined { color: #f87171; }
+    button { padding: 4px 10px; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; margin-right: 4px; }
+    .btn-complete { background: #166534; color: #4ade80; }
+    .btn-complete:hover { background: #14532d; }
+    .btn-fail     { background: #7f1d1d; color: #f87171; }
+    .btn-fail:hover { background: #6b1a1a; }
+    .empty { color: #555; padding: 24px 0; }
+  </style>
+</head>
+<body>
+  <h1>Yousign Mock</h1>
+  <p class="cfg">WEBHOOK_TARGET: ${process.env.WEBHOOK_TARGET || WEBHOOK_TARGET} &nbsp;|&nbsp; DELAY: ${process.env.AUTO_COMPLETE_DELAY_MS || AUTO_COMPLETE_DELAY_MS}ms</p>
+  <div id="root">Lade...</div>
+  <script>
+    async function action(url) {
+      await fetch(url, { method: 'POST' });
+      render();
+    }
+    async function render() {
+      const res = await fetch('/admin/requests');
+      const srs = await res.json();
+      const root = document.getElementById('root');
+      if (!srs.length) {
+        root.innerHTML = '<p class="empty">Keine Signature Requests</p>';
+        return;
+      }
+      root.innerHTML = \`<table>
+        <thead><tr>
+          <th>ID</th><th>Name</th><th>Status</th><th>Docs</th><th>Signers</th><th>Erstellt</th><th>Aktionen</th>
+        </tr></thead>
+        <tbody>\${srs.map(sr => \`<tr>
+          <td title="\${sr.id}">\${sr.id.slice(0, 14)}…</td>
+          <td>\${sr.name || '—'}</td>
+          <td class="status-\${sr.status}">\${sr.status}</td>
+          <td>\${sr.documents}</td>
+          <td>\${sr.signers}</td>
+          <td>\${new Date(sr.created_at).toLocaleTimeString('de')}</td>
+          <td>
+            <button class="btn-complete" onclick="action('/admin/complete/\${sr.id}')">✅ Abschließen</button>
+            <button class="btn-fail"     onclick="action('/admin/fail/\${sr.id}')">❌ Ablehnen</button>
+          </td>
+        </tr>\`).join('')}</tbody>
+      </table>\`;
+    }
+    render();
+    setInterval(render, 3000);
+  </script>
+</body>
+</html>`);
+});
+
 // ── Health ────────────────────────────────────────────────────────────────────
 app.get('/health', (req, res) => res.json({
   ok: true,
