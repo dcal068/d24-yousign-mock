@@ -41,6 +41,68 @@ function log(msg, data) {
   console.log(`[${ts}] ${msg}`, data !== undefined ? JSON.stringify(data) : '');
 }
 
+// ── Signature Requests ────────────────────────────────────────────────────────
+app.post('/signature_requests', (req, res) => {
+  const sr = {
+    id: `sr-${uuidv4()}`,
+    name: req.body.name || 'Mock SR',
+    external_id: req.body.external_id || null,
+    delivery_mode: req.body.delivery_mode || 'none',
+    ordered_signers: req.body.ordered_signers ?? false,
+    status: 'draft',
+    created_at: new Date().toISOString(),
+    documentIds: [],
+    signerIds: [],
+  };
+  signatureRequests.set(sr.id, sr);
+  log('[SR] Created', { id: sr.id, name: sr.name });
+  const { documentIds, signerIds, ...resp } = sr;
+  res.status(201).json(resp);
+});
+
+app.get('/signature_requests/:srId', (req, res) => {
+  const sr = signatureRequests.get(req.params.srId);
+  if (!sr) return res.status(404).json({ detail: 'Not found', status: 404 });
+  const { documentIds, signerIds, ...resp } = sr;
+  res.json(resp);
+});
+
+// ── Signers ───────────────────────────────────────────────────────────────────
+app.post('/signature_requests/:srId/signers', (req, res) => {
+  const sr = signatureRequests.get(req.params.srId);
+  if (!sr) return res.status(404).json({ detail: 'SR not found', status: 404 });
+
+  const signer = {
+    id: `signer-${uuidv4()}`,
+    contact_id: req.body.contact_id,
+    contact: contacts.get(req.body.contact_id) || { id: req.body.contact_id, email: 'mock@test.de' },
+    signature_level: req.body.signature_level || 'electronic_signature',
+    signature_authentication_mode: req.body.signature_authentication_mode || 'otp_sms',
+    status: 'pending',
+  };
+  signers.set(signer.id, signer);
+  sr.signerIds.push(signer.id);
+  log('[SIGNER] Added', { srId: req.params.srId, signerId: signer.id });
+  res.status(201).json(signer);
+});
+
+app.get('/signature_requests/:srId/signers', (req, res) => {
+  const sr = signatureRequests.get(req.params.srId);
+  if (!sr) return res.status(404).json({ detail: 'SR not found', status: 404 });
+  res.json(sr.signerIds.map(id => signers.get(id)));
+});
+
+// ── Contacts ──────────────────────────────────────────────────────────────────
+app.get('/contacts/:contactId', (req, res) => {
+  const contact = contacts.get(req.params.contactId) || {
+    id: req.params.contactId,
+    email: 'mock@test.de',
+    first_name: 'Mock',
+    last_name: 'User',
+  };
+  res.json(contact);
+});
+
 // ── Health ────────────────────────────────────────────────────────────────────
 app.get('/health', (req, res) => res.json({
   ok: true,
