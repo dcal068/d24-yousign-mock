@@ -103,6 +103,49 @@ app.get('/contacts/:contactId', (req, res) => {
   res.json(contact);
 });
 
+// ── Documents ─────────────────────────────────────────────────────────────────
+app.post('/signature_requests/:srId/documents', upload.single('file'), (req, res) => {
+  const sr = signatureRequests.get(req.params.srId);
+  if (!sr) return res.status(404).json({ detail: 'SR not found', status: 404 });
+
+  const doc = {
+    id: `doc-${uuidv4()}`,
+    name: req.body.name || req.file?.originalname || 'document.pdf',
+    nature: req.body.nature || 'signable_document',
+    created_at: new Date().toISOString(),
+    _buffer: req.file?.buffer || FAKE_PDF,
+  };
+  documents.set(doc.id, doc);
+  sr.documentIds.push(doc.id);
+  log('[DOC] Uploaded', { srId: req.params.srId, docId: doc.id, bytes: doc._buffer.length });
+  const { _buffer, ...resp } = doc;
+  res.status(201).json(resp);
+});
+
+app.get('/signature_requests/:srId/documents', (req, res) => {
+  const sr = signatureRequests.get(req.params.srId);
+  if (!sr) return res.status(404).json({ detail: 'SR not found', status: 404 });
+  const docs = sr.documentIds.map(id => {
+    const { _buffer, ...d } = documents.get(id);
+    return d;
+  });
+  res.json(docs);
+});
+
+app.get('/signature_requests/:srId/documents/:docId/download', (req, res) => {
+  const doc = documents.get(req.params.docId);
+  if (!doc) return res.status(404).json({ detail: 'Not found', status: 404 });
+  log('[DOWNLOAD]', { docId: req.params.docId });
+  res.set('Content-Type', 'application/pdf');
+  res.set('Content-Disposition', `attachment; filename="${doc.name}"`);
+  res.send(doc._buffer);
+});
+
+app.post('/signature_requests/:srId/documents/:docId/fields', (req, res) => {
+  log('[FIELD] Added', { docId: req.params.docId });
+  res.status(201).json({ id: `field-${uuidv4()}`, ...req.body });
+});
+
 // ── Health ────────────────────────────────────────────────────────────────────
 app.get('/health', (req, res) => res.json({
   ok: true,
