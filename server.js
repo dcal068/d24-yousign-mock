@@ -41,6 +41,44 @@ function log(msg, data) {
   console.log(`[${ts}] ${msg}`, data !== undefined ? JSON.stringify(data) : '');
 }
 
+// ── Webhook fire ──────────────────────────────────────────────────────────────
+async function fireWebhook(srId, event) {
+  const sr = signatureRequests.get(srId);
+  if (!sr) return;
+
+  const isDeclined = event === 'declined';
+  sr.status = isDeclined ? 'declined' : 'done';
+
+  const payload = isDeclined
+    ? {
+        event_name: 'signature_request.declined',
+        data: { signature_request: { id: srId, status: 'declined' } },
+      }
+    : {
+        event_name: 'signature_request.completed',
+        data: {
+          signature_request: {
+            id: srId,
+            status: 'done',
+            documents: sr.documentIds.map(id => ({ id })),
+          },
+        },
+      };
+
+  const target = process.env.WEBHOOK_TARGET || WEBHOOK_TARGET;
+  log(`[WEBHOOK] Firing ${event || 'completed'}`, { target, srId });
+
+  try {
+    const resp = await axios.post(target, payload, {
+      headers: { 'Content-Type': 'application/json' },
+      timeout: 10_000,
+    });
+    log('[WEBHOOK] OK', { status: resp.status });
+  } catch (err) {
+    log('[WEBHOOK] ERROR', { message: err.message, body: err.response?.data });
+  }
+}
+
 // ── Signature Requests ────────────────────────────────────────────────────────
 app.post('/signature_requests', (req, res) => {
   const sr = {
@@ -144,6 +182,19 @@ app.get('/signature_requests/:srId/documents/:docId/download', (req, res) => {
 app.post('/signature_requests/:srId/documents/:docId/fields', (req, res) => {
   log('[FIELD] Added', { docId: req.params.docId });
   res.status(201).json({ id: `field-${uuidv4()}`, ...req.body });
+});
+
+// ── Activate ──────────────────────────────────────────────────────────────────
+app.post('/signature_requests/:srId/activate', (req, res) => {
+  const sr = signatureRequests.get(req.params.srId);
+  if (!sr) return res.status(404).json({ detail: 'SR not found', status: 404 });
+
+  sr.status = 'ongoing';
+  const delay = parseInt(process.env.AUTO_COMPLETE_DELAY_MS || AUTO_COMPLETE_DELAY_MS, 10);
+  log(`[ACTIVATE] SR ${req.params.srId} — webhook fires in ${delay}ms`);
+
+  res.json({ id: sr.id, status: sr.status });
+  setTimeout(() => fireWebhook(sr.id), delay);
 });
 
 // ── Health ────────────────────────────────────────────────────────────────────
