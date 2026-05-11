@@ -79,6 +79,9 @@ async function fireWebhook(srId, event) {
   }
 }
 
+// ── Root redirect ─────────────────────────────────────────────────────────────
+app.get('/', (req, res) => res.redirect('/dashboard'));
+
 // ── Signature Requests ────────────────────────────────────────────────────────
 app.post('/signature_requests', (req, res) => {
   const sr = {

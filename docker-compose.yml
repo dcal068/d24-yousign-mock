@@ -1,0 +1,10 @@
+services:
+  yousign-mock:
+    build: .
+    ports:
+      - "4099:4099"
+    environment:
+      PORT: 4099
+      WEBHOOK_TARGET: ${WEBHOOK_TARGET:-http://host.docker.internal:5019/api/v1/signing/webhook/yousign}
+      AUTO_COMPLETE_DELAY_MS: ${AUTO_COMPLETE_DELAY_MS:-5000}
+    restart: unless-stopped
