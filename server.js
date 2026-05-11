@@ -197,6 +197,33 @@ app.post('/signature_requests/:srId/activate', (req, res) => {
   setTimeout(() => fireWebhook(sr.id), delay);
 });
 
+// ── Admin ─────────────────────────────────────────────────────────────────────
+app.get('/admin/requests', (req, res) => {
+  const list = Array.from(signatureRequests.values()).map(sr => ({
+    id: sr.id,
+    name: sr.name,
+    status: sr.status,
+    documents: sr.documentIds.length,
+    signers: sr.signerIds.length,
+    created_at: sr.created_at,
+  }));
+  res.json(list);
+});
+
+app.post('/admin/complete/:srId', async (req, res) => {
+  if (!signatureRequests.has(req.params.srId))
+    return res.status(404).json({ error: 'SR not found' });
+  await fireWebhook(req.params.srId, 'completed');
+  res.json({ ok: true, srId: req.params.srId, event: 'completed' });
+});
+
+app.post('/admin/fail/:srId', async (req, res) => {
+  if (!signatureRequests.has(req.params.srId))
+    return res.status(404).json({ error: 'SR not found' });
+  await fireWebhook(req.params.srId, 'declined');
+  res.json({ ok: true, srId: req.params.srId, event: 'declined' });
+});
+
 // ── Health ────────────────────────────────────────────────────────────────────
 app.get('/health', (req, res) => res.json({
   ok: true,
