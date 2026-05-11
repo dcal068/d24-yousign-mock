@@ -2,15 +2,15 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build a standalone Express.js server that mimics the Yousign API v3, so d24-backend can create signature requests locally without hitting the real Yousign API — and auto-fires the signed webhook back after a configurable delay.
+**Goal:** Build a single-file Express server that mimics the Yousign API v3 locally so d24-backend can run its full signing flow without hitting the real Yousign API.
 
-**Architecture:** Single-file Express server with in-memory store for signature requests, documents, and signers. On `POST /signature_requests/:id/activate`, a timer fires that POSTs `signature_request.completed` to d24-backend's webhook endpoint. Admin routes allow manual triggering and runtime inspection.
+**Architecture:** One `server.js` file with in-memory Maps for state. On `activate`, a timer fires and POSTs a webhook back to d24-backend. An HTML dashboard at `/dashboard` shows all SRs with manual complete/decline buttons.
 
-**Tech Stack:** Node.js, Express 4, multer (multipart uploads), axios (outgoing webhook), uuid, dotenv
+**Tech Stack:** Node.js, Express 4, multer (multipart), axios (outgoing webhook), uuid, dotenv
 
 ---
 
-> **Note:** `package.json` and a draft `server.js` were partially created before this plan was written. Task 1 will overwrite/finalize them cleanly.
+> **Note:** `package.json` and `server.js` may already exist as drafts from a previous session — overwrite them cleanly per Task 1 and Task 2.
 
 ---
 
@@ -18,10 +18,12 @@
 
 | File | Role |
 |---|---|
-| `package.json` | Dependencies and npm scripts |
-| `.env.example` | Documented config template |
-| `server.js` | Full Express mock server (single responsibility: mock Yousign) |
-| `README.md` | How to start and test |
+| `package.json` | Dependencies + npm scripts |
+| `.env.example` | Config template (committed) |
+| `.env` | Local config (gitignored) |
+| `.gitignore` | Ignore node_modules + .env |
+| `server.js` | Entire mock server — built incrementally across tasks |
+| `README.md` | Start guide + d24-backend wiring |
 
 ---
 
@@ -30,6 +32,7 @@
 **Files:**
 - Overwrite: `package.json`
 - Create: `.env.example`
+- Create: `.env`
 - Create: `.gitignore`
 
 - [ ] **Step 1: Write `package.json`**
@@ -57,48 +60,51 @@
 - [ ] **Step 2: Write `.env.example`**
 
 ```env
-# Port this mock server listens on
 PORT=4099
-
-# Where d24-backend's Yousign webhook lives
 WEBHOOK_TARGET=http://localhost:5019/signing/webhook/yousign
-
-# Milliseconds after activate() before the mock fires "signature_request.completed"
 AUTO_COMPLETE_DELAY_MS=5000
 ```
 
-- [ ] **Step 3: Write `.gitignore`**
+- [ ] **Step 3: Write `.env`** (same content as .env.example to start)
+
+```env
+PORT=4099
+WEBHOOK_TARGET=http://localhost:5019/signing/webhook/yousign
+AUTO_COMPLETE_DELAY_MS=5000
+```
+
+- [ ] **Step 4: Write `.gitignore`**
 
 ```
 node_modules/
 .env
 ```
 
-- [ ] **Step 4: Install dependencies**
+- [ ] **Step 5: Install dependencies**
 
 ```bash
-cd /Users/denizcaliskan/dcal/d24-yousign-mock
-npm install
+cd /Users/denizcaliskan/dcal/d24-yousign-mock && npm install
 ```
 
-Expected: `node_modules/` created, no errors.
+Expected: `node_modules/` created, no errors, no audit warnings that block install.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git -C /Users/denizcaliskan/dcal/d24-yousign-mock init
-git -C /Users/denizcaliskan/dcal/d24-yousign-mock add package.json .env.example .gitignore
-git -C /Users/denizcaliskan/dcal/d24-yousign-mock commit -m "chore: init project with deps"
+git -C /Users/denizcaliskan/dcal/d24-yousign-mock add package.json package-lock.json .env.example .gitignore
+git -C /Users/denizcaliskan/dcal/d24-yousign-mock commit -m "chore: project setup with deps"
 ```
 
 ---
 
-## Task 2: In-Memory Store + Server Bootstrap
+## Task 2: Server Bootstrap + Health Endpoint
 
 **Files:**
-- Create/Overwrite: `server.js` (bootstrap only — routes added in Tasks 3–6)
+- Create/Overwrite: `server.js`
 
-- [ ] **Step 1: Write server bootstrap in `server.js`**
+- [ ] **Step 1: Write the full server bootstrap**
+
+Create `/Users/denizcaliskan/dcal/d24-yousign-mock/server.js` with this exact content:
 
 ```js
 require('dotenv').config();
@@ -116,12 +122,10 @@ const PORT = process.env.PORT || 4099;
 const WEBHOOK_TARGET = process.env.WEBHOOK_TARGET || 'http://localhost:5019/signing/webhook/yousign';
 const AUTO_COMPLETE_DELAY_MS = parseInt(process.env.AUTO_COMPLETE_DELAY_MS || '5000', 10);
 
-// In-memory store
-const signatureRequests = new Map(); // srId → { id, name, status, documentIds[], signerIds[] }
-const documents = new Map();         // docId → { id, name, nature, _buffer }
-const signers = new Map();           // signerId → { id, contact_id, contact, status, ... }
-
-// Seed one mock contact so d24-backend's contact lookups don't 404
+// ── In-memory store ───────────────────────────────────────────────────────────
+const signatureRequests = new Map();
+const documents = new Map();
+const signers = new Map();
 const contacts = new Map([
   ['contact-doctor-1', {
     id: 'contact-doctor-1',
@@ -131,12 +135,22 @@ const contacts = new Map([
   }],
 ]);
 
+// Minimal valid PDF (~200 bytes) — returned for all document downloads
+const FAKE_PDF = Buffer.from(
+  '%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n' +
+  '2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n' +
+  '3 0 obj<</Type/Page/MediaBox[0 0 612 792]/Parent 2 0 R>>endobj\n' +
+  'xref\n0 4\n0000000000 65535 f\n0000000009 00000 n\n' +
+  '0000000058 00000 n\n0000000115 00000 n\n' +
+  'trailer<</Size 4/Root 1 0 R>>\nstartxref\n190\n%%EOF\n'
+);
+
 function log(msg, data) {
   const ts = new Date().toISOString();
-  console.log(`[${ts}] ${msg}`, data ? JSON.stringify(data) : '');
+  console.log(`[${ts}] ${msg}`, data !== undefined ? JSON.stringify(data) : '');
 }
 
-// Health
+// ── Health ────────────────────────────────────────────────────────────────────
 app.get('/health', (req, res) => res.json({
   ok: true,
   signatureRequests: signatureRequests.size,
@@ -145,27 +159,26 @@ app.get('/health', (req, res) => res.json({
 }));
 
 app.listen(PORT, () => {
-  console.log(`\nYousign Mock API → http://localhost:${PORT}`);
+  console.log(`\nYousign Mock → http://localhost:${PORT}`);
   console.log(`  WEBHOOK_TARGET      = ${WEBHOOK_TARGET}`);
   console.log(`  AUTO_COMPLETE_DELAY = ${AUTO_COMPLETE_DELAY_MS}ms\n`);
 });
-
-module.exports = { app, signatureRequests, documents, signers, contacts, log, uuidv4 };
 ```
 
-- [ ] **Step 2: Verify server starts**
+- [ ] **Step 2: Verify server starts and health responds**
 
 ```bash
-node /Users/denizcaliskan/dcal/d24-yousign-mock/server.js &
-curl http://localhost:4099/health
+cd /Users/denizcaliskan/dcal/d24-yousign-mock
+node server.js &
+sleep 1
+curl -s http://localhost:4099/health
+kill %1
 ```
 
-Expected:
+Expected output:
 ```json
 {"ok":true,"signatureRequests":0,"webhookTarget":"http://localhost:5019/signing/webhook/yousign","autoCompleteDelayMs":5000}
 ```
-
-Kill the process after verifying: `kill %1`
 
 - [ ] **Step 3: Commit**
 
@@ -176,19 +189,19 @@ git -C /Users/denizcaliskan/dcal/d24-yousign-mock commit -m "feat: bootstrap exp
 
 ---
 
-## Task 3: Signature Request + Signer + Contact Routes
+## Task 3: Signature Request, Signer + Contact Routes
 
-These are the routes d24-backend calls to set up a signing session.
+These are called by d24-backend to set up a signing session.
 
 **Files:**
-- Modify: `server.js` — add routes before `app.listen`
+- Modify: `server.js` — insert routes between the `FAKE_PDF` constant and `app.get('/health', ...)`
 
-- [ ] **Step 1: Add signature request routes**
+- [ ] **Step 1: Add all routes**
 
-Insert before `app.listen(...)`:
+Insert the following block in `server.js` after the `FAKE_PDF` constant and before `app.get('/health', ...)`:
 
 ```js
-// POST /signature_requests → create
+// ── Signature Requests ────────────────────────────────────────────────────────
 app.post('/signature_requests', (req, res) => {
   const sr = {
     id: `sr-${uuidv4()}`,
@@ -203,19 +216,18 @@ app.post('/signature_requests', (req, res) => {
   };
   signatureRequests.set(sr.id, sr);
   log('[SR] Created', { id: sr.id, name: sr.name });
-  const { documentIds, signerIds, ...response } = sr;
-  res.status(201).json(response);
+  const { documentIds, signerIds, ...resp } = sr;
+  res.status(201).json(resp);
 });
 
-// GET /signature_requests/:srId
 app.get('/signature_requests/:srId', (req, res) => {
   const sr = signatureRequests.get(req.params.srId);
   if (!sr) return res.status(404).json({ detail: 'Not found', status: 404 });
-  const { documentIds, signerIds, ...response } = sr;
-  res.json(response);
+  const { documentIds, signerIds, ...resp } = sr;
+  res.json(resp);
 });
 
-// POST /signature_requests/:srId/signers
+// ── Signers ───────────────────────────────────────────────────────────────────
 app.post('/signature_requests/:srId/signers', (req, res) => {
   const sr = signatureRequests.get(req.params.srId);
   if (!sr) return res.status(404).json({ detail: 'SR not found', status: 404 });
@@ -230,18 +242,17 @@ app.post('/signature_requests/:srId/signers', (req, res) => {
   };
   signers.set(signer.id, signer);
   sr.signerIds.push(signer.id);
-  log('[SIGNER] Added', { srId: req.params.srId, signerId: signer.id, contactId: signer.contact_id });
+  log('[SIGNER] Added', { srId: req.params.srId, signerId: signer.id });
   res.status(201).json(signer);
 });
 
-// GET /signature_requests/:srId/signers
 app.get('/signature_requests/:srId/signers', (req, res) => {
   const sr = signatureRequests.get(req.params.srId);
   if (!sr) return res.status(404).json({ detail: 'SR not found', status: 404 });
   res.json(sr.signerIds.map(id => signers.get(id)));
 });
 
-// GET /contacts/:contactId
+// ── Contacts ──────────────────────────────────────────────────────────────────
 app.get('/contacts/:contactId', (req, res) => {
   const contact = contacts.get(req.params.contactId) || {
     id: req.params.contactId,
@@ -253,20 +264,22 @@ app.get('/contacts/:contactId', (req, res) => {
 });
 ```
 
-- [ ] **Step 2: Verify manually**
+- [ ] **Step 2: Verify SR creation**
 
 ```bash
+cd /Users/denizcaliskan/dcal/d24-yousign-mock
 node server.js &
+sleep 1
 
-# Create SR
 curl -s -X POST http://localhost:4099/signature_requests \
   -H "Content-Type: application/json" \
-  -d '{"name":"Test SR","delivery_mode":"none"}' | jq .
-
-# Should return: { "id": "sr-...", "status": "draft", ... }
+  -H "Authorization: Bearer mock-key" \
+  -d '{"name":"Test SR","delivery_mode":"none"}'
 
 kill %1
 ```
+
+Expected: JSON with `"id": "sr-..."` and `"status": "draft"`.
 
 - [ ] **Step 3: Commit**
 
@@ -277,31 +290,19 @@ git -C /Users/denizcaliskan/dcal/d24-yousign-mock commit -m "feat: add signature
 
 ---
 
-## Task 4: Document Upload + Download + Field Routes
+## Task 4: Document Routes
 
 d24-backend uploads the prescription PDF here, then downloads the "signed" version later.
 
 **Files:**
-- Modify: `server.js` — add document routes before `app.listen`
+- Modify: `server.js` — insert document routes after the signer routes
 
-- [ ] **Step 1: Add a minimal fake PDF constant** (after the `contacts` Map declaration)
+- [ ] **Step 1: Add document routes**
 
-```js
-// Minimal valid PDF returned when no real file was uploaded
-const FAKE_PDF = Buffer.from(
-  '%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n' +
-  '2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n' +
-  '3 0 obj<</Type/Page/MediaBox[0 0 612 792]/Parent 2 0 R>>endobj\n' +
-  'xref\n0 4\n0000000000 65535 f\n0000000009 00000 n\n' +
-  '0000000058 00000 n\n0000000115 00000 n\n' +
-  'trailer<</Size 4/Root 1 0 R>>\nstartxref\n190\n%%EOF\n'
-);
-```
-
-- [ ] **Step 2: Add document routes** (before `app.listen`)
+Insert after the contacts route and before `app.get('/health', ...)`:
 
 ```js
-// POST /signature_requests/:srId/documents  (multipart upload)
+// ── Documents ─────────────────────────────────────────────────────────────────
 app.post('/signature_requests/:srId/documents', upload.single('file'), (req, res) => {
   const sr = signatureRequests.get(req.params.srId);
   if (!sr) return res.status(404).json({ detail: 'SR not found', status: 404 });
@@ -316,11 +317,10 @@ app.post('/signature_requests/:srId/documents', upload.single('file'), (req, res
   documents.set(doc.id, doc);
   sr.documentIds.push(doc.id);
   log('[DOC] Uploaded', { srId: req.params.srId, docId: doc.id, bytes: doc._buffer.length });
-  const { _buffer, ...response } = doc;
-  res.status(201).json(response);
+  const { _buffer, ...resp } = doc;
+  res.status(201).json(resp);
 });
 
-// GET /signature_requests/:srId/documents
 app.get('/signature_requests/:srId/documents', (req, res) => {
   const sr = signatureRequests.get(req.params.srId);
   if (!sr) return res.status(404).json({ detail: 'SR not found', status: 404 });
@@ -331,43 +331,44 @@ app.get('/signature_requests/:srId/documents', (req, res) => {
   res.json(docs);
 });
 
-// GET /signature_requests/:srId/documents/:docId/download
 app.get('/signature_requests/:srId/documents/:docId/download', (req, res) => {
   const doc = documents.get(req.params.docId);
   if (!doc) return res.status(404).json({ detail: 'Not found', status: 404 });
-  log('[DOWNLOAD] Doc', { docId: req.params.docId });
+  log('[DOWNLOAD]', { docId: req.params.docId });
   res.set('Content-Type', 'application/pdf');
   res.set('Content-Disposition', `attachment; filename="${doc.name}"`);
   res.send(doc._buffer);
 });
 
-// POST /signature_requests/:srId/documents/:docId/fields  (signature field positions)
 app.post('/signature_requests/:srId/documents/:docId/fields', (req, res) => {
   log('[FIELD] Added', { docId: req.params.docId });
   res.status(201).json({ id: `field-${uuidv4()}`, ...req.body });
 });
 ```
 
-- [ ] **Step 3: Verify download returns a PDF**
+- [ ] **Step 2: Verify upload + download**
 
 ```bash
+cd /Users/denizcaliskan/dcal/d24-yousign-mock
 node server.js &
+sleep 1
+
 SR=$(curl -s -X POST http://localhost:4099/signature_requests \
   -H "Content-Type: application/json" \
-  -d '{"name":"T"}' | jq -r .id)
+  -d '{"name":"T"}' | node -e "process.stdin.resume();let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>console.log(JSON.parse(d).id))")
 
-DOC=$(curl -s -X POST http://localhost:4099/signature_requests/$SR/documents \
-  -F "file=@/dev/null;type=application/pdf" \
-  -F "name=test.pdf" | jq -r .id)
+DOC=$(curl -s -X POST "http://localhost:4099/signature_requests/$SR/documents" \
+  -F "name=test.pdf" -F "nature=signable_document" | node -e "process.stdin.resume();let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>console.log(JSON.parse(d).id))")
 
 curl -s -o /tmp/out.pdf "http://localhost:4099/signature_requests/$SR/documents/$DOC/download"
 file /tmp/out.pdf
-# Expected: /tmp/out.pdf: PDF document ...
 
 kill %1
 ```
 
-- [ ] **Step 4: Commit**
+Expected: `/tmp/out.pdf: PDF document, version 1.4`
+
+- [ ] **Step 3: Commit**
 
 ```bash
 git -C /Users/denizcaliskan/dcal/d24-yousign-mock add server.js
@@ -378,97 +379,110 @@ git -C /Users/denizcaliskan/dcal/d24-yousign-mock commit -m "feat: add document 
 
 ## Task 5: Activate Route + Webhook Fire
 
-This is the core: `activate` triggers an auto-complete timer that fires the Yousign webhook back at d24-backend.
+The core of the mock: `activate` schedules the webhook, `fireWebhook` sends it.
 
 **Files:**
-- Modify: `server.js` — add `fireWebhook` function + activate route before `app.listen`
+- Modify: `server.js` — add `fireWebhook` function and activate route
 
-- [ ] **Step 1: Add `fireWebhook` function** (after the `contacts` Map)
+- [ ] **Step 1: Add `fireWebhook` function**
+
+Insert after the `log` function definition and before the route definitions:
 
 ```js
-async function fireWebhook(srId) {
+// ── Webhook fire ──────────────────────────────────────────────────────────────
+async function fireWebhook(srId, event) {
   const sr = signatureRequests.get(srId);
   if (!sr) return;
 
-  sr.status = 'done';
+  const isDeclined = event === 'declined';
+  sr.status = isDeclined ? 'declined' : 'done';
 
-  const payload = {
-    event_name: 'signature_request.completed',
-    data: {
-      signature_request: {
-        id: srId,
-        status: 'done',
-        documents: sr.documentIds.map(id => ({ id })),
-      },
-    },
-  };
+  const payload = isDeclined
+    ? {
+        event_name: 'signature_request.declined',
+        data: { signature_request: { id: srId, status: 'declined' } },
+      }
+    : {
+        event_name: 'signature_request.completed',
+        data: {
+          signature_request: {
+            id: srId,
+            status: 'done',
+            documents: sr.documentIds.map(id => ({ id })),
+          },
+        },
+      };
 
   const target = process.env.WEBHOOK_TARGET || WEBHOOK_TARGET;
-  log('[WEBHOOK] Firing', { target, srId, docs: sr.documentIds });
+  log(`[WEBHOOK] Firing ${event || 'completed'}`, { target, srId });
 
   try {
     const resp = await axios.post(target, payload, {
       headers: { 'Content-Type': 'application/json' },
       timeout: 10_000,
     });
-    log('[WEBHOOK] OK', { status: resp.status, body: resp.data });
+    log('[WEBHOOK] OK', { status: resp.status });
   } catch (err) {
     log('[WEBHOOK] ERROR', { message: err.message, body: err.response?.data });
   }
 }
 ```
 
-- [ ] **Step 2: Add activate route** (before `app.listen`)
+- [ ] **Step 2: Add activate route**
+
+Insert after the document routes and before `app.get('/health', ...)`:
 
 ```js
-// POST /signature_requests/:srId/activate
+// ── Activate ──────────────────────────────────────────────────────────────────
 app.post('/signature_requests/:srId/activate', (req, res) => {
   const sr = signatureRequests.get(req.params.srId);
   if (!sr) return res.status(404).json({ detail: 'SR not found', status: 404 });
 
   sr.status = 'ongoing';
   const delay = parseInt(process.env.AUTO_COMPLETE_DELAY_MS || AUTO_COMPLETE_DELAY_MS, 10);
-  log(`[ACTIVATE] SR ${req.params.srId} → will fire webhook in ${delay}ms`);
+  log(`[ACTIVATE] SR ${req.params.srId} — webhook fires in ${delay}ms`);
 
   res.json({ id: sr.id, status: sr.status });
-
   setTimeout(() => fireWebhook(sr.id), delay);
 });
 ```
 
-- [ ] **Step 3: Verify the full flow end-to-end (mock only, no d24-backend needed)**
+- [ ] **Step 3: Verify webhook fires**
 
-Start a tiny webhook receiver in one terminal:
+Open two terminals.
+
+Terminal 1 — start a tiny receiver:
 ```bash
 node -e "
 const http = require('http');
 http.createServer((req, res) => {
-  let body = '';
-  req.on('data', d => body += d);
-  req.on('end', () => { console.log('RECEIVED:', body); res.end('ok'); });
+  let b = '';
+  req.on('data', d => b += d);
+  req.on('end', () => { console.log('GOT WEBHOOK:', b); res.end('ok'); });
 }).listen(9999, () => console.log('Receiver on :9999'));
 "
 ```
 
-In another terminal:
+Terminal 2:
 ```bash
-WEBHOOK_TARGET=http://localhost:9999 AUTO_COMPLETE_DELAY_MS=2000 node server.js &
+cd /Users/denizcaliskan/dcal/d24-yousign-mock
+AUTO_COMPLETE_DELAY_MS=2000 WEBHOOK_TARGET=http://localhost:9999 node server.js &
+sleep 1
 
 SR=$(curl -s -X POST http://localhost:4099/signature_requests \
   -H "Content-Type: application/json" \
-  -d '{"name":"E2E Test"}' | jq -r .id)
+  -d '{"name":"E2E"}' | node -e "process.stdin.resume();let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>console.log(JSON.parse(d).id))")
 
-curl -s -X POST http://localhost:4099/signature_requests/$SR/activate \
+curl -s -X POST "http://localhost:4099/signature_requests/$SR/activate" \
   -H "Content-Type: application/json" -d '{}'
 
-# Wait 3 seconds — receiver terminal should print the webhook payload
 sleep 3
-kill %2
+kill %1
 ```
 
-Expected in receiver terminal:
+Expected in Terminal 1 after ~2s:
 ```
-RECEIVED: {"event_name":"signature_request.completed","data":{"signature_request":{"id":"sr-...","status":"done","documents":[]}}}
+GOT WEBHOOK: {"event_name":"signature_request.completed","data":{"signature_request":{"id":"sr-...","status":"done","documents":[]}}}
 ```
 
 - [ ] **Step 4: Commit**
@@ -480,25 +494,17 @@ git -C /Users/denizcaliskan/dcal/d24-yousign-mock commit -m "feat: add activate 
 
 ---
 
-## Task 6: Admin Routes
+## Task 6: Admin JSON Endpoints
 
-Convenience routes for manual control during testing.
+Manual control during testing — complete or fail an SR instantly, inspect all SRs.
 
 **Files:**
-- Modify: `server.js` — add admin routes before `app.listen`
+- Modify: `server.js` — add admin routes before `app.get('/health', ...)`
 
 - [ ] **Step 1: Add admin routes**
 
 ```js
-// POST /admin/complete/:srId  → manually trigger webhook (skip the timer)
-app.post('/admin/complete/:srId', async (req, res) => {
-  if (!signatureRequests.has(req.params.srId))
-    return res.status(404).json({ error: 'SR not found' });
-  await fireWebhook(req.params.srId);
-  res.json({ ok: true, srId: req.params.srId });
-});
-
-// GET /admin/requests  → inspect all SRs
+// ── Admin ─────────────────────────────────────────────────────────────────────
 app.get('/admin/requests', (req, res) => {
   const list = Array.from(signatureRequests.values()).map(sr => ({
     id: sr.id,
@@ -511,35 +517,164 @@ app.get('/admin/requests', (req, res) => {
   res.json(list);
 });
 
-// POST /admin/config  → change webhookTarget at runtime without restart
-app.post('/admin/config', (req, res) => {
-  if (req.body.webhookTarget) {
-    process.env.WEBHOOK_TARGET = req.body.webhookTarget;
-    log('[CONFIG] webhookTarget updated', { target: req.body.webhookTarget });
-  }
-  res.json({ webhookTarget: process.env.WEBHOOK_TARGET || WEBHOOK_TARGET });
+app.post('/admin/complete/:srId', async (req, res) => {
+  if (!signatureRequests.has(req.params.srId))
+    return res.status(404).json({ error: 'SR not found' });
+  await fireWebhook(req.params.srId, 'completed');
+  res.json({ ok: true, srId: req.params.srId, event: 'completed' });
+});
+
+app.post('/admin/fail/:srId', async (req, res) => {
+  if (!signatureRequests.has(req.params.srId))
+    return res.status(404).json({ error: 'SR not found' });
+  await fireWebhook(req.params.srId, 'declined');
+  res.json({ ok: true, srId: req.params.srId, event: 'declined' });
 });
 ```
 
-- [ ] **Step 2: Verify admin list endpoint**
+- [ ] **Step 2: Verify**
 
 ```bash
+cd /Users/denizcaliskan/dcal/d24-yousign-mock
 node server.js &
-curl -s http://localhost:4099/admin/requests | jq .
-# Expected: []
+sleep 1
+curl -s http://localhost:4099/admin/requests
 kill %1
 ```
+
+Expected: `[]`
 
 - [ ] **Step 3: Commit**
 
 ```bash
 git -C /Users/denizcaliskan/dcal/d24-yousign-mock add server.js
-git -C /Users/denizcaliskan/dcal/d24-yousign-mock commit -m "feat: add admin routes for manual control"
+git -C /Users/denizcaliskan/dcal/d24-yousign-mock commit -m "feat: add admin complete/fail/list endpoints"
 ```
 
 ---
 
-## Task 7: README + Wire Up Against d24-backend
+## Task 7: HTML Dashboard
+
+A single inline HTML page at `GET /dashboard`. Auto-refreshes every 3s, shows all SRs, has complete/decline buttons per row.
+
+**Files:**
+- Modify: `server.js` — add dashboard route before `app.get('/health', ...)`
+
+- [ ] **Step 1: Add dashboard route**
+
+```js
+// ── Dashboard ─────────────────────────────────────────────────────────────────
+app.get('/dashboard', (req, res) => {
+  res.send(`<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <title>Yousign Mock</title>
+  <style>
+    body { font-family: monospace; padding: 24px; background: #0f0f0f; color: #e0e0e0; }
+    h1 { color: #fff; margin-bottom: 4px; }
+    p.cfg { color: #888; margin: 0 0 24px; font-size: 12px; }
+    table { width: 100%; border-collapse: collapse; }
+    th { text-align: left; padding: 8px 12px; background: #1e1e1e; color: #aaa; font-size: 12px; }
+    td { padding: 8px 12px; border-bottom: 1px solid #2a2a2a; font-size: 13px; }
+    tr:hover td { background: #1a1a1a; }
+    .status-draft    { color: #888; }
+    .status-ongoing  { color: #60a5fa; }
+    .status-done     { color: #4ade80; }
+    .status-declined { color: #f87171; }
+    button { padding: 4px 10px; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; margin-right: 4px; }
+    .btn-complete { background: #166534; color: #4ade80; }
+    .btn-complete:hover { background: #14532d; }
+    .btn-fail     { background: #7f1d1d; color: #f87171; }
+    .btn-fail:hover { background: #6b1a1a; }
+    .empty { color: #555; padding: 24px 0; }
+  </style>
+</head>
+<body>
+  <h1>Yousign Mock</h1>
+  <p class="cfg">WEBHOOK_TARGET: ${process.env.WEBHOOK_TARGET || WEBHOOK_TARGET} &nbsp;|&nbsp; DELAY: ${process.env.AUTO_COMPLETE_DELAY_MS || AUTO_COMPLETE_DELAY_MS}ms</p>
+  <div id="root">Lade...</div>
+  <script>
+    async function action(url) {
+      await fetch(url, { method: 'POST' });
+      render();
+    }
+    async function render() {
+      const res = await fetch('/admin/requests');
+      const srs = await res.json();
+      const root = document.getElementById('root');
+      if (!srs.length) {
+        root.innerHTML = '<p class="empty">Keine Signature Requests</p>';
+        return;
+      }
+      root.innerHTML = \`<table>
+        <thead><tr>
+          <th>ID</th><th>Name</th><th>Status</th><th>Docs</th><th>Signers</th><th>Erstellt</th><th>Aktionen</th>
+        </tr></thead>
+        <tbody>\${srs.map(sr => \`<tr>
+          <td title="\${sr.id}">\${sr.id.slice(0, 14)}…</td>
+          <td>\${sr.name || '—'}</td>
+          <td class="status-\${sr.status}">\${sr.status}</td>
+          <td>\${sr.documents}</td>
+          <td>\${sr.signers}</td>
+          <td>\${new Date(sr.created_at).toLocaleTimeString('de')}</td>
+          <td>
+            <button class="btn-complete" onclick="action('/admin/complete/\${sr.id}')">✅ Abschließen</button>
+            <button class="btn-fail"     onclick="action('/admin/fail/\${sr.id}')">❌ Ablehnen</button>
+          </td>
+        </tr>\`).join('')}</tbody>
+      </table>\`;
+    }
+    render();
+    setInterval(render, 3000);
+  </script>
+</body>
+</html>`);
+});
+```
+
+- [ ] **Step 2: Verify dashboard loads**
+
+```bash
+cd /Users/denizcaliskan/dcal/d24-yousign-mock
+node server.js &
+sleep 1
+curl -s http://localhost:4099/dashboard | grep -c "Yousign Mock"
+kill %1
+```
+
+Expected: `1`
+
+- [ ] **Step 3: Open in browser and create a test SR, verify it appears**
+
+```bash
+cd /Users/denizcaliskan/dcal/d24-yousign-mock
+node server.js &
+sleep 1
+
+curl -s -X POST http://localhost:4099/signature_requests \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Dashboard Test"}'
+
+open http://localhost:4099/dashboard
+```
+
+Expected: Dashboard shows one row with name "Dashboard Test", status "draft", two buttons.
+
+```bash
+kill %1
+```
+
+- [ ] **Step 4: Commit**
+
+```bash
+git -C /Users/denizcaliskan/dcal/d24-yousign-mock add server.js
+git -C /Users/denizcaliskan/dcal/d24-yousign-mock commit -m "feat: add HTML dashboard with auto-refresh and action buttons"
+```
+
+---
+
+## Task 8: README + d24-backend Wiring
 
 **Files:**
 - Create: `README.md`
@@ -549,25 +684,27 @@ git -C /Users/denizcaliskan/dcal/d24-yousign-mock commit -m "feat: add admin rou
 ```markdown
 # d24-yousign-mock
 
-Local Yousign API v3 mock for testing d24-backend signing flows.
+Lokaler Yousign API v3 Mock für d24-backend Signing-Tests.
 
 ## Start
 
 ```bash
-cp .env.example .env
-npm install
-npm run dev
+cp .env.example .env   # einmalig
+npm install            # einmalig
+npm run dev            # startet mit --watch
 ```
+
+Dashboard: http://localhost:4099/dashboard
 
 ## Config (.env)
 
-| Variable | Default | Description |
+| Variable | Default | Beschreibung |
 |---|---|---|
-| `PORT` | `4099` | Port this mock listens on |
-| `WEBHOOK_TARGET` | `http://localhost:5019/signing/webhook/yousign` | d24-backend webhook URL |
-| `AUTO_COMPLETE_DELAY_MS` | `5000` | ms after activate() before webhook fires |
+| `PORT` | `4099` | Port dieses Mocks |
+| `WEBHOOK_TARGET` | `http://localhost:5019/signing/webhook/yousign` | Wohin der Webhook gefeuert wird |
+| `AUTO_COMPLETE_DELAY_MS` | `5000` | ms nach activate() bis Webhook automatisch feuert |
 
-## Wire up d24-backend
+## d24-backend verbinden
 
 In d24-backend `.env`:
 ```env
@@ -575,54 +712,24 @@ YOUSIGN_BASE_URL=http://localhost:4099
 YOUSIGN_API_KEY=mock-key-anything
 ```
 
-## Admin endpoints
+Dann d24-backend neu starten.
 
-| Endpoint | Description |
+## Admin Endpoints
+
+| Endpoint | Beschreibung |
 |---|---|
-| `GET  /health` | Status + config |
-| `GET  /admin/requests` | List all SRs in memory |
-| `POST /admin/complete/:srId` | Manually fire webhook for SR |
-| `POST /admin/config` | Change webhookTarget at runtime |
-
-## Full flow
-
-1. Start this mock: `npm run dev`
-2. Start d24-backend pointing at this mock
-3. Create a prescription + sign it in the UI
-4. After `AUTO_COMPLETE_DELAY_MS`, the mock fires the webhook
-5. d24-backend processes it, downloads the (fake) PDF, publishes MQTT
-6. d24-cannaelo-api picks it up via MQTT and forwards to Cannaelo
+| `GET  /health` | Status + aktuelle Config |
+| `GET  /dashboard` | HTML-Dashboard |
+| `GET  /admin/requests` | Alle SRs als JSON |
+| `POST /admin/complete/:srId` | Webhook `completed` sofort feuern |
+| `POST /admin/fail/:srId` | Webhook `declined` sofort feuern |
 ```
 
-- [ ] **Step 2: Set d24-backend env and restart**
-
-In `/Users/denizcaliskan/dcal/d24-backend/.env` (or `.env.local`), set:
-```env
-YOUSIGN_BASE_URL=http://localhost:4099
-YOUSIGN_API_KEY=mock-key-anything
-```
-
-Restart d24-backend.
-
-- [ ] **Step 3: Smoke test the full chain**
+- [ ] **Step 2: Commit**
 
 ```bash
-# 1. Start mock
-cd /Users/denizcaliskan/dcal/d24-yousign-mock && npm start &
-
-# 2. Ping mock
-curl http://localhost:4099/health
-
-# 3. Watch mock logs + trigger a real signing flow from the d24 UI
-#    → after AUTO_COMPLETE_DELAY_MS the mock fires the webhook
-#    → check d24 admin panel: Übertragungsprotokoll should show a new entry
-```
-
-- [ ] **Step 4: Final commit**
-
-```bash
-git -C /Users/denizcaliskan/dcal/d24-yousign-mock add README.md server.js
-git -C /Users/denizcaliskan/dcal/d24-yousign-mock commit -m "docs: add README and finalize mock server"
+git -C /Users/denizcaliskan/dcal/d24-yousign-mock add README.md
+git -C /Users/denizcaliskan/dcal/d24-yousign-mock commit -m "docs: add README with start guide and d24-backend wiring"
 ```
 
 ---
@@ -630,18 +737,18 @@ git -C /Users/denizcaliskan/dcal/d24-yousign-mock commit -m "docs: add README an
 ## Self-Review
 
 **Spec coverage:**
-- ✅ `POST /signature_requests` — Task 3
-- ✅ `POST /signature_requests/:id/documents` (multipart) — Task 4
-- ✅ `POST /signature_requests/:id/signers` — Task 3
-- ✅ `POST /signature_requests/:id/documents/:docId/fields` — Task 4
-- ✅ `POST /signature_requests/:id/activate` + webhook fire — Task 5
-- ✅ `GET /signature_requests/:id/documents` — Task 4
-- ✅ `GET /signature_requests/:id/documents/:docId/download` — Task 4
-- ✅ `GET /signature_requests/:id/signers` — Task 3
-- ✅ `GET /contacts/:id` — Task 3
-- ✅ Admin: manual trigger, list SRs, runtime config — Task 6
-- ✅ README + d24-backend wiring — Task 7
+- ✅ All 10 Yousign API endpoints — Tasks 3, 4, 5
+- ✅ In-memory store (signatureRequests, documents, signers, contacts) — Task 2
+- ✅ Fake PDF — Task 2 (FAKE_PDF constant)
+- ✅ WEBHOOK_TARGET via .env only — Task 1 + Task 5
+- ✅ Auto-complete after delay — Task 5
+- ✅ `signature_request.completed` payload — Task 5
+- ✅ `signature_request.declined` payload — Task 5 (fireWebhook with event param)
+- ✅ HTML Dashboard with auto-refresh + complete/decline buttons — Task 7
+- ✅ Status colors (draft/ongoing/done/declined) — Task 7
+- ✅ `/admin/complete/:srId` and `/admin/fail/:srId` — Task 6
+- ✅ README + d24-backend wiring — Task 8
 
-**Placeholder scan:** No TBDs, no "add error handling later", all steps have concrete code/commands.
+**Placeholder scan:** No TBDs, all steps have concrete code and commands.
 
-**Type consistency:** `signatureRequests`, `documents`, `signers`, `contacts` Maps are defined in Task 2 and referenced consistently in Tasks 3–6. `fireWebhook(srId)` defined in Task 5, called in Tasks 5 and 6.
+**Type consistency:** `fireWebhook(srId, event)` defined in Task 5, called with `'completed'` and `'declined'` in Task 6. `signatureRequests`, `documents`, `signers`, `contacts`, `FAKE_PDF` defined in Task 2, referenced consistently in Tasks 3–7.
